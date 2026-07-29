@@ -43,3 +43,4 @@ npm-debug.log*
 demo.db
 *-report.html
 report.html
+.vite/
