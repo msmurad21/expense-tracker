@@ -6,6 +6,8 @@ import {
   type FetchOptions,
   MailAuthError,
   MailConnectionError,
+  MailTimeoutError,
+  withTimeout,
 } from './MailSource.js';
 
 /**
@@ -23,7 +25,19 @@ export interface ImapCredentials {
   appPassword: string;
   host?: string;
   port?: number;
+  /**
+   * Give up connecting after this long.
+   *
+   * Not optional in practice: on a network that blackholes port 993 — corporate
+   * and university Wi-Fi commonly do — the TCP connect neither succeeds nor
+   * fails, it simply hangs. Without a bound, `npm run setup` sits there forever
+   * and looks broken rather than blocked, which is the worst possible outcome
+   * for the one command a non-technical user is told to run first.
+   */
+  timeoutMs?: number;
 }
+
+const DEFAULT_CONNECT_TIMEOUT_MS = 20_000;
 
 /**
  * Pull the DKIM-verified sender domain out of Gmail's own verification result.
@@ -97,10 +111,18 @@ export class ImapSource implements MailSource {
       logger: false,
     });
 
+    const timeoutMs = this.#credentials.timeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
+
     try {
-      await client.connect();
+      await withTimeout(client.connect(), timeoutMs, () => {
+        // Tear the socket down explicitly; an abandoned promise would otherwise
+        // keep the process alive after we have given up on it.
+        void client.close();
+      });
       this.#client = client;
     } catch (err) {
+      if (err instanceof MailTimeoutError) throw err;
+
       const message = err instanceof Error ? err.message : String(err);
 
       if (/AUTHENTICATIONFAILED|Invalid credentials|LOGIN failed/i.test(message)) {

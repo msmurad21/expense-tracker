@@ -21,7 +21,7 @@ import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ImapSource } from '../src/main/mail/ImapSource.js';
-import { MailAuthError, MailConnectionError } from '../src/main/mail/MailSource.js';
+import { MailAuthError, MailConnectionError, MailTimeoutError } from '../src/main/mail/MailSource.js';
 import { initDatabase, resolveDatabasePath } from '../src/main/db/index.js';
 import {
   insertEmail,
@@ -86,7 +86,7 @@ const since = new Date(Date.now() - sinceDays * 86_400_000);
 const db = initDatabase();
 console.log(`Database: ${resolveDatabasePath()}`);
 
-const source = new ImapSource({ user, appPassword });
+const source = new ImapSource({ user, appPassword, timeoutMs: 30_000 });
 
 try {
   console.log(`Connecting to Gmail as ${user} …`);
@@ -169,7 +169,11 @@ try {
     }
   }
 } catch (err) {
-  if (err instanceof MailAuthError || err instanceof MailConnectionError) {
+  if (
+    err instanceof MailAuthError ||
+    err instanceof MailConnectionError ||
+    err instanceof MailTimeoutError
+  ) {
     console.error(`\n${err.message}\n\n${err.fix}\n`);
     process.exit(1);
   }

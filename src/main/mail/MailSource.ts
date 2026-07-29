@@ -65,3 +65,60 @@ export class MailConnectionError extends Error {
     this.name = 'MailConnectionError';
   }
 }
+
+/**
+ * Connecting exceeded its time limit.
+ *
+ * Distinct from a connection *failure* on purpose: a refused connection means
+ * something answered, whereas a timeout usually means a firewall is silently
+ * dropping the packets, and the advice differs.
+ */
+export class MailTimeoutError extends Error {
+  constructor(
+    message: string,
+    readonly fix: string,
+  ) {
+    super(message);
+    this.name = 'MailTimeoutError';
+  }
+}
+
+/**
+ * Reject `promise` if it has not settled within `ms`.
+ *
+ * `onTimeout` gets a chance to tear down whatever the promise was holding —
+ * without it, an abandoned socket keeps the Node process alive long after the
+ * caller has stopped waiting.
+ */
+export async function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  onTimeout?: () => void,
+): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          onTimeout?.();
+          reject(
+            new MailTimeoutError(
+              `Gave up after ${Math.round(ms / 1000)} seconds waiting for the mail server.`,
+              [
+                'The connection is not being refused — it is going unanswered, which usually',
+                'means a firewall is dropping it. Port 993 is commonly blocked on corporate,',
+                'university and some public Wi-Fi networks.',
+                '',
+                'Try a different network, such as a phone hotspot.',
+              ].join('\n'),
+            ),
+          );
+        }, ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
