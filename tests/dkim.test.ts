@@ -35,6 +35,53 @@ describe('extractDkimDomain — reading Gmail’s verdict', () => {
   });
 });
 
+describe('extractDkimDomain — the header.i form Gmail actually uses', () => {
+  // Reading only header.d reported an entire real inbox of 3768 messages as
+  // unverified, including Google's own mail, which silently disabled all
+  // parsing. RFC 8601 permits both identifiers and Gmail prefers header.i.
+
+  it('reads header.i, stripping the leading @', () => {
+    const headers =
+      'Authentication-Results: mx.google.com; dkim=pass header.i=@sc.com header.s=s1 header.b=Ab1; spf=pass';
+    expect(extractDkimDomain(headers)).toBe('sc.com');
+  });
+
+  it('reads header.i when it carries a local part', () => {
+    const headers = 'Authentication-Results: mx.google.com; dkim=pass header.i=alerts@nayapay.com';
+    expect(extractDkimDomain(headers)).toBe('nayapay.com');
+  });
+
+  it('reads header.i across a folded header', () => {
+    const headers = [
+      'Authentication-Results: mx.google.com;',
+      '       dkim=pass header.i=@elevatepay.co header.s=sel header.b=xY9;',
+      '       spf=pass (google.com: domain of x designates 1.2.3.4) smtp.mailfrom=x@elevatepay.co;',
+      '       dmarc=pass (p=NONE sp=NONE dis=NONE) header.from=elevatepay.co',
+    ].join('\r\n');
+    expect(extractDkimDomain(headers)).toBe('elevatepay.co');
+  });
+
+  it('prefers header.d when both are present', () => {
+    // header.d is the signing domain proper; header.i may be a subdomain of it.
+    const headers =
+      'Authentication-Results: mx.google.com; dkim=pass header.d=sc.com header.i=@mail.sc.com';
+    expect(extractDkimDomain(headers)).toBe('sc.com');
+  });
+
+  it('does not accept header.i from a failing signature', () => {
+    const headers = 'Authentication-Results: mx.google.com; dkim=fail header.i=@sc.com';
+    expect(extractDkimDomain(headers)).toBeNull();
+  });
+
+  it('ignores header.from, which is not an authentication result', () => {
+    // header.from is just the From header echoed back; it is not signed and
+    // must never stand in for a verified domain.
+    const headers =
+      'Authentication-Results: mx.google.com; dkim=none; spf=fail; dmarc=fail header.from=sc.com';
+    expect(extractDkimDomain(headers)).toBeNull();
+  });
+});
+
 describe('extractDkimDomain — refuses anything short of a pass', () => {
   it('returns null when DKIM failed', () => {
     const headers = 'Authentication-Results: mx.google.com; dkim=fail header.d=hbl.com';

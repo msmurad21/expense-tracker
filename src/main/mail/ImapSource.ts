@@ -48,9 +48,25 @@ const DEFAULT_CONNECT_TIMEOUT_MS = 20_000;
  *
  *   Authentication-Results: mx.google.com; dkim=pass header.d=hbl.com; spf=pass ...
  *
- * We take `header.d` only when the corresponding `dkim=` verdict is `pass`. A
+ * The domain is taken only when the corresponding `dkim=` verdict is `pass`. A
  * `fail`, `none` or absent header yields null, and null means no template will
  * ever run against the message.
+ *
+ * ── Both identifier forms must be read ─────────────────────────────────────
+ * RFC 8601 allows the signing domain to be reported two ways, and Gmail uses
+ * both:
+ *
+ *   dkim=pass header.d=netflix.com        the SDID — the signing domain
+ *   dkim=pass header.i=@sc.com            the AUID — an identity within it
+ *
+ * In practice Gmail emits `header.i` far more often. Reading only `header.d`
+ * therefore reports essentially every message as unverified, which silently
+ * disables all parsing rather than failing loudly — a real inbox of 3768
+ * messages produced zero verified senders, including Google's own mail.
+ *
+ * `header.i` is safe to use: the AUID is defined to be the signing domain or a
+ * subdomain of it, so the domain after the `@` is still attributable to the
+ * signer. `header.d` is preferred where both appear.
  *
  * Only the topmost Authentication-Results header is trusted: Gmail prepends its
  * own on delivery, while anything below it could have been written by the
@@ -64,15 +80,22 @@ export function extractDkimDomain(rawHeaders: string): string | null {
 
     const unfolded = line.replace(/\r?\n[ \t]+/g, ' ');
 
-    // Find each dkim=<verdict> and the header.d that belongs to it. A message
-    // can carry several signatures, so pair verdict with domain positionally
-    // rather than grabbing the first header.d anywhere in the line.
+    // Find each dkim=<verdict> and the identifier belonging to it. A message can
+    // carry several signatures, so pair verdict with domain positionally rather
+    // than grabbing the first identifier anywhere in the line.
     const dkimClause = /dkim=(\w+)([^;]*)/gi;
     let m: RegExpExecArray | null;
     while ((m = dkimClause.exec(unfolded)) !== null) {
       if ((m[1] ?? '').toLowerCase() !== 'pass') continue;
-      const domainMatch = /header\.d=([A-Za-z0-9.-]+)/i.exec(m[2] ?? '');
-      if (domainMatch) return (domainMatch[1] ?? '').toLowerCase();
+
+      const clause = m[2] ?? '';
+
+      const sdid = /header\.d=([A-Za-z0-9.-]+)/i.exec(clause);
+      if (sdid?.[1]) return sdid[1].toLowerCase().replace(/\.$/, '');
+
+      // header.i is "@domain" or "local@domain"; the domain follows the @.
+      const auid = /header\.i=[^\s;@]*@([A-Za-z0-9.-]+)/i.exec(clause);
+      if (auid?.[1]) return auid[1].toLowerCase().replace(/\.$/, '');
     }
 
     // Only the first (topmost) Authentication-Results header is Gmail's.
@@ -80,6 +103,42 @@ export function extractDkimDomain(rawHeaders: string): string | null {
   }
 
   return null;
+}
+
+/**
+ * Why a message ended up unverified.
+ *
+ * Exists because "unverified" has several very different causes and they need
+ * different responses: a genuinely unsigned sender is expected and fine, but a
+ * signature that passed while we failed to read the domain is a bug in this
+ * file. Without distinguishing them, a parsing bug looks exactly like a mailbox
+ * full of unsigned senders — which is how reading only header.d went unnoticed.
+ *
+ * Reports no message content: only the verdict and, on success, the domain.
+ */
+export type DkimReason =
+  | 'pass'
+  | 'no_auth_header'
+  | 'dkim_none'
+  | 'dkim_fail'
+  | 'dkim_other'
+  | 'pass_but_no_domain';
+
+export function diagnoseDkim(rawHeaders: string): { domain: string | null; reason: DkimReason } {
+  const domain = extractDkimDomain(rawHeaders);
+  if (domain) return { domain, reason: 'pass' };
+
+  const lines = rawHeaders.split(/\r?\n(?![ \t])/);
+  const header = lines.find((l) => /^authentication-results:/i.test(l));
+  if (!header) return { domain: null, reason: 'no_auth_header' };
+
+  const unfolded = header.replace(/\r?\n[ \t]+/g, ' ');
+  const verdict = /dkim=(\w+)/i.exec(unfolded)?.[1]?.toLowerCase();
+
+  if (verdict === 'pass') return { domain: null, reason: 'pass_but_no_domain' };
+  if (verdict === 'none') return { domain: null, reason: 'dkim_none' };
+  if (verdict === 'fail') return { domain: null, reason: 'dkim_fail' };
+  return { domain: null, reason: verdict ? 'dkim_other' : 'no_auth_header' };
 }
 
 function domainOf(address: string): string {
@@ -198,6 +257,7 @@ export class ImapSource implements MailSource {
         }
 
         const rawHeaders = message.source.toString('utf8').split(/\r?\n\r?\n/)[0] ?? '';
+        const dkim = diagnoseDkim(rawHeaders);
 
         yield {
           // Fall back to the UID only if the message genuinely has no
@@ -206,7 +266,8 @@ export class ImapSource implements MailSource {
           source: 'imap',
           fromAddress,
           fromDomain,
-          dkimDomain: extractDkimDomain(rawHeaders),
+          dkimDomain: dkim.domain,
+          dkimReason: dkim.reason,
           subject: parsed.subject ?? '',
           receivedAt: (parsed.date ?? new Date()).toISOString(),
           // Prefer the text part. Where only HTML exists, mailparser's derived

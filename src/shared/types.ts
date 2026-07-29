@@ -38,6 +38,12 @@ export interface RawEmail {
    * because the From header is trivially spoofable.
    */
   dkimDomain: string | null;
+  /**
+   * Why verification did or did not succeed. Diagnostic only — nothing depends
+   * on it, but it separates "this sender does not sign" from "we failed to read
+   * a signature that passed", which are indistinguishable from the outcome.
+   */
+  dkimReason?: string;
   subject: string;
   receivedAt: string; // ISO-8601 UTC
   /** Sanitised plain text. Raw HTML never leaves the main process. */

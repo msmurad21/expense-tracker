@@ -105,6 +105,10 @@ try {
   let scanned = 0;
   let highestUid = cursor.value ? Number(cursor.value) : 0;
   const dkimDomains = new Map<string, number>();
+  // Track WHY anything is unverified. A sender that does not sign is expected;
+  // a signature that passed while we failed to read it is a bug, and the two
+  // are indistinguishable from the outcome alone.
+  const unverifiedReasons = new Map<string, number>();
 
   const fetchOptions: { limit?: number; since?: Date } = { since };
   if (limit !== undefined) fetchOptions.limit = limit;
@@ -117,6 +121,11 @@ try {
 
     const key = email.dkimDomain ?? `(unverified) ${email.fromDomain}`;
     dkimDomains.set(key, (dkimDomains.get(key) ?? 0) + 1);
+
+    if (!email.dkimDomain) {
+      const reason = email.dkimReason ?? 'unknown';
+      unverifiedReasons.set(reason, (unverifiedReasons.get(reason) ?? 0) + 1);
+    }
 
     if (!flag('discover')) {
       const id = insertEmail(db, email);
@@ -135,11 +144,37 @@ try {
     for (const [domain, count] of rows.slice(0, 40)) {
       console.log(`  ${String(count).padStart(5)}  ${domain}`);
     }
+    const verified = [...dkimDomains.keys()].filter((k) => !k.startsWith('(unverified)')).length;
+    console.log(`\n${verified} verified sender domain(s), ${unverifiedReasons.size ? '' : 'no '}unverified mail.`);
+
+    if (unverifiedReasons.size > 0) {
+      console.log('\nWhy the unverified ones were skipped:\n');
+      const explain: Record<string, string> = {
+        no_auth_header: 'no Authentication-Results header (Gmail did not record a verdict)',
+        dkim_none: 'sender did not sign the message',
+        dkim_fail: 'signature present but failed verification',
+        dkim_other: 'verification error (temperror/permerror)',
+        pass_but_no_domain:
+          'DKIM PASSED but the signing domain could not be read — this is a bug, please report it',
+        unknown: 'not recorded',
+      };
+      for (const [reason, count] of [...unverifiedReasons.entries()].sort((a, b) => b[1] - a[1])) {
+        console.log(`  ${String(count).padStart(5)}  ${explain[reason] ?? reason}`);
+      }
+
+      if ((unverifiedReasons.get('pass_but_no_domain') ?? 0) > 0) {
+        console.log(
+          '\n  ⚠ Messages passed DKIM but their domain could not be extracted. That is a\n' +
+            '    parsing bug, not a property of your mail. Please open an issue.',
+        );
+      }
+    }
+
     console.log(
       [
         '',
-        'Domains marked "(unverified)" failed or lacked a DKIM signature.',
-        'No parse template will ever run against those, by design.',
+        'No parse template ever runs against unverified mail, by design — that is',
+        'what stops a forged bank alert from being believed.',
         '',
         'Nothing was written to the database in discover mode.',
         '',
