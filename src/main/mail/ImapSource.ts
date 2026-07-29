@@ -1,0 +1,221 @@
+import { ImapFlow } from 'imapflow';
+import { simpleParser } from 'mailparser';
+import type { RawEmail, SyncCursor } from '../../shared/types.js';
+import {
+  type MailSource,
+  type FetchOptions,
+  MailAuthError,
+  MailConnectionError,
+} from './MailSource.js';
+
+/**
+ * Reads Gmail over IMAP using an App Password.
+ *
+ * Why an App Password rather than OAuth: it takes two minutes instead of ten
+ * and needs no Google Cloud project. The costs are real and documented in
+ * MailSource.ts — it grants full-mailbox access rather than read-only, it
+ * requires 2-Step Verification, it does not work at all for Workspace
+ * accounts, and Google is retiring it.
+ */
+export interface ImapCredentials {
+  user: string;
+  /** 16-character Gmail App Password. Never logged, never shown, never sent anywhere but Gmail. */
+  appPassword: string;
+  host?: string;
+  port?: number;
+}
+
+/**
+ * Pull the DKIM-verified sender domain out of Gmail's own verification result.
+ *
+ * This is the piece that makes template binding trustworthy without us
+ * implementing DKIM. Gmail verifies signatures on receipt and records the
+ * outcome in an `Authentication-Results` header:
+ *
+ *   Authentication-Results: mx.google.com; dkim=pass header.d=hbl.com; spf=pass ...
+ *
+ * We take `header.d` only when the corresponding `dkim=` verdict is `pass`. A
+ * `fail`, `none` or absent header yields null, and null means no template will
+ * ever run against the message.
+ *
+ * Only the topmost Authentication-Results header is trusted: Gmail prepends its
+ * own on delivery, while anything below it could have been written by the
+ * sender.
+ */
+export function extractDkimDomain(rawHeaders: string): string | null {
+  const lines = rawHeaders.split(/\r?\n(?![ \t])/); // unfold continuation lines
+
+  for (const line of lines) {
+    if (!/^authentication-results:/i.test(line)) continue;
+
+    const unfolded = line.replace(/\r?\n[ \t]+/g, ' ');
+
+    // Find each dkim=<verdict> and the header.d that belongs to it. A message
+    // can carry several signatures, so pair verdict with domain positionally
+    // rather than grabbing the first header.d anywhere in the line.
+    const dkimClause = /dkim=(\w+)([^;]*)/gi;
+    let m: RegExpExecArray | null;
+    while ((m = dkimClause.exec(unfolded)) !== null) {
+      if ((m[1] ?? '').toLowerCase() !== 'pass') continue;
+      const domainMatch = /header\.d=([A-Za-z0-9.-]+)/i.exec(m[2] ?? '');
+      if (domainMatch) return (domainMatch[1] ?? '').toLowerCase();
+    }
+
+    // Only the first (topmost) Authentication-Results header is Gmail's.
+    return null;
+  }
+
+  return null;
+}
+
+function domainOf(address: string): string {
+  const at = address.lastIndexOf('@');
+  return at === -1 ? '' : address.slice(at + 1).toLowerCase().replace(/[>\s]/g, '');
+}
+
+export class ImapSource implements MailSource {
+  readonly kind = 'imap' as const;
+
+  #client: ImapFlow | null = null;
+  #credentials: ImapCredentials;
+
+  constructor(credentials: ImapCredentials) {
+    this.#credentials = credentials;
+  }
+
+  async connect(): Promise<void> {
+    const client = new ImapFlow({
+      host: this.#credentials.host ?? 'imap.gmail.com',
+      port: this.#credentials.port ?? 993,
+      secure: true,
+      auth: {
+        user: this.#credentials.user,
+        pass: this.#credentials.appPassword,
+      },
+      // imapflow logs the full IMAP conversation at info level, which would put
+      // mail content and credentials into stdout. Off, deliberately.
+      logger: false,
+    });
+
+    try {
+      await client.connect();
+      this.#client = client;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+
+      if (/AUTHENTICATIONFAILED|Invalid credentials|LOGIN failed/i.test(message)) {
+        throw new MailAuthError(
+          'Gmail rejected the username or App Password.',
+          [
+            'Check three things, in this order:',
+            '  1. 2-Step Verification must be ON for your Google account — App Passwords do not exist without it.',
+            '  2. The App Password is 16 characters with no spaces. Google displays it in groups of 4; remove them.',
+            '  3. If this is a Google Workspace account (a custom domain rather than @gmail.com), App Passwords were',
+            '     disabled by Google in 2025. Use the Gmail API option instead.',
+          ].join('\n'),
+        );
+      }
+
+      throw new MailConnectionError(
+        `Could not reach Gmail: ${message}`,
+        'Check your internet connection. If you are on a corporate or university network, port 993 may be blocked.',
+      );
+    }
+  }
+
+  async disconnect(): Promise<void> {
+    if (this.#client) {
+      await this.#client.logout().catch(() => {
+        /* already gone; nothing useful to do */
+      });
+      this.#client = null;
+    }
+  }
+
+  async *fetchSince(cursor: SyncCursor, options: FetchOptions = {}): AsyncIterable<RawEmail> {
+    const client = this.#client;
+    if (!client) throw new MailConnectionError('Not connected.', 'Call connect() first.');
+
+    const lock = await client.getMailboxLock('INBOX');
+    try {
+      // UID-based resume. Gmail UIDs increase monotonically within a mailbox,
+      // so "everything above the last one we saw" is an exact, cheap resume
+      // point — and combined with the UNIQUE message_id in the database, a
+      // re-sync can never double-count even if the cursor is wrong.
+      const lastUid = cursor.value ? Number(cursor.value) : 0;
+
+      const range = lastUid > 0 ? `${lastUid + 1}:*` : '1:*';
+      const searchCriteria: Record<string, unknown> = {};
+      if (options.since) searchCriteria['since'] = options.since;
+
+      let yielded = 0;
+
+      for await (const message of client.fetch(
+        lastUid > 0 ? range : searchCriteria,
+        { uid: true, source: true, envelope: true },
+        { uid: true },
+      )) {
+        if (options.limit !== undefined && yielded >= options.limit) break;
+        if (!message.source) continue;
+
+        // Gmail's UID wildcard range always returns at least one message even
+        // when nothing is new; skip anything we have already passed.
+        if (lastUid > 0 && message.uid <= lastUid) continue;
+
+        const parsed = await simpleParser(message.source);
+
+        const fromAddress = parsed.from?.value?.[0]?.address ?? '';
+        const fromDomain = domainOf(fromAddress);
+
+        if (
+          options.senderDomains &&
+          options.senderDomains.length > 0 &&
+          !options.senderDomains.some((d) => fromDomain === d || fromDomain.endsWith(`.${d}`))
+        ) {
+          continue;
+        }
+
+        const rawHeaders = message.source.toString('utf8').split(/\r?\n\r?\n/)[0] ?? '';
+
+        yield {
+          // Fall back to the UID only if the message genuinely has no
+          // Message-ID, which is rare and non-conforming.
+          messageId: parsed.messageId ?? `imap-uid-${message.uid}`,
+          source: 'imap',
+          fromAddress,
+          fromDomain,
+          dkimDomain: extractDkimDomain(rawHeaders),
+          subject: parsed.subject ?? '',
+          receivedAt: (parsed.date ?? new Date()).toISOString(),
+          // Prefer the text part. Where only HTML exists, mailparser's derived
+          // text is used — raw HTML is never stored or rendered, which avoids
+          // both tracking pixels and an XSS vector fed by hostile input.
+          bodyText: parsed.text ?? stripHtml(parsed.html || ''),
+        };
+
+        yielded++;
+      }
+    } finally {
+      lock.release();
+    }
+  }
+}
+
+/** Last-resort HTML to text. mailparser normally supplies this for us. */
+function stripHtml(html: string): string {
+  return html
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|tr|li|h[1-6])>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
