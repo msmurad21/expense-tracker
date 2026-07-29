@@ -24,7 +24,8 @@
     "analyze": "tsx scripts/analyze.ts",
     "seed-demo": "tsx scripts/seed-demo.ts",
     "parse": "tsx scripts/parse.ts",
-    "templates": "tsx scripts/templates.ts"
+    "templates": "tsx scripts/templates.ts",
+    "inspect": "tsx scripts/inspect.ts"
   },
   "dependencies": {
     "imapflow": "^1.0.191",
