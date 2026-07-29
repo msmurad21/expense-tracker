@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+out/
+.vite/
+*.tsbuildinfo
+
+# ---------------------------------------------------------------------------
+# Sensitive — never commit. This project reads a personal email inbox and
+# financial data; everything below can contain real credentials or real money.
+# ---------------------------------------------------------------------------
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.env
+.env.*
+!.env.example
+credentials.json
+client_secret*.json
+token.json
+tokens.json
+secrets.json
+
+# Real email samples used while developing parsers. Only anonymized,
+# synthetic fixtures under tests/fixtures/ may ever be committed.
+samples/
+*.eml
+!tests/fixtures/**/*.eml
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Logs
+*.log
+npm-debug.log*
