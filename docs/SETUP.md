@@ -140,34 +140,93 @@ reset resume point costs re-downloading, never duplicate transactions.
 
 ---
 
-## Step 6 — Teach it your bank's format
+## Step 6 — Add the shipped templates and review them
 
-The app ships with templates for common international services, but it cannot
-ship one for every bank in the world, and a template guessed without seeing a
-real email would produce wrong numbers.
+```bash
+npm run templates -- --seed
+npm run templates
+```
+
+You'll see templates for Netflix, Spotify, Apple, Google, OpenAI, Adobe and
+Microsoft — all **pending**, which means they parse nothing yet.
+
+That is deliberate. They were written from each provider's known receipt format,
+not verified against a real message, because committing real receipts to the
+repository is exactly what this project forbids. So you check one against your
+own mail first:
+
+```bash
+npm run templates -- --preview 1
+```
+
+```
+  Template 1: Netflix receipt
+  Bound to DKIM-verified domain: netflix.com
+  Previewing against: "Your Netflix receipt"
+
+    currency           ok         US$
+    amount             ok         15.49
+    plan_name          ok         Standard with ads
+    owning_account     ok         you@example.com
+
+  If those values look right for that email:
+    npm run templates -- --approve 1
+```
+
+Each rule runs in a sandboxed worker with a hard time limit, so a pathological
+pattern gets killed rather than freezing anything. If a preview reports
+`TIMED OUT`, reject that template.
+
+## Step 7 — Teach it your bank's format
+
+The app cannot ship a template for every bank in the world, and one guessed
+without seeing a real email would produce wrong numbers.
 
 **The easy way.** Open the project in [Claude Code](https://claude.com/claude-code)
 and say:
 
 > add a parse template for hbl.com
 
-It will read one of the already-synced emails from that sender, work out where
-the amount, date, merchant and card digits are, and write a template. You'll be
-shown exactly what it extracted before anything is approved.
+It reads an already-synced email from that sender, works out where the amount,
+date, merchant and card digits are, and writes a template. You are shown exactly
+what it extracted before anything is approved.
 
 **The manual way.** See [CONTRIBUTING.md](../CONTRIBUTING.md) — a template is a
-small declarative object, and writing one takes a few minutes.
+small declarative object and takes a few minutes to write.
 
-Either way, **nothing parses until you approve it.** That applies to built-in
-templates too.
+Either way, **nothing parses until you approve it.** Built-in templates included.
 
 ---
 
-## Step 7 — See your subscriptions
+## Step 8 — Parse, then look
 
 ```bash
+npm run parse
 npm run analyze
 ```
+
+`npm run parse` turns the stored emails into transactions using whatever you
+have approved, and tells you which senders still have no template:
+
+```
+  Parsed:     412
+  Unmatched:  18  (no approved template is bound to that sender)
+  Failed:     0
+
+  Wrote 412 transaction(s) and 0 receipt(s).
+```
+
+`npm run analyze` prints a summary and writes `report.html` — open it in a
+browser for the dashboard.
+
+**When you add or improve a template later**, re-derive the whole history
+without re-downloading anything:
+
+```bash
+npm run parse -- --all
+```
+
+That is why the raw messages are kept separate from what was extracted.
 
 ---
 

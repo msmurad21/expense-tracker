@@ -196,21 +196,25 @@ export function vetPattern(pattern: string): RegexVerdict {
     };
   }
 
-  // A single explosive repetition like a{5000} is cheap to reject and has no
-  // legitimate use here.
+  // Reject a large FINITE repetition like a{5000}, which forces a big fixed
+  // expansion and has no legitimate use in field extraction.
   //
-  // The comma is captured separately so that an exact count is not mistaken for
-  // an open-ended one: `{2}` bounds at 2, whereas `{2,}` is unbounded. Reading
-  // `\d{2}` as unbounded would reject almost every real currency pattern.
-  const bigRepetition = /\{\s*(\d+)\s*(,)?\s*(\d*)\s*\}/g;
+  // An open-ended `{n,}` is deliberately NOT rejected for being open-ended: it
+  // is exactly as expensive as `+`, which is allowed everywhere. Treating them
+  // differently was an inconsistency that rejected ordinary patterns such as
+  // `[A-Za-z]{2,}` for matching a TLD, while `[A-Za-z]+` sailed through. What
+  // actually causes exponential blowup is NESTING, and hasNestedQuantifier
+  // above already treats `{n,}` as unbounded for that purpose.
+  const repetition = /\{\s*(\d+)\s*(,)?\s*(\d*)\s*\}/g;
   let m: RegExpExecArray | null;
-  while ((m = bigRepetition.exec(pattern)) !== null) {
+  while ((m = repetition.exec(pattern)) !== null) {
     const lower = Number(m[1]);
     const hasComma = m[2] !== undefined;
     const upperText = m[3] ?? '';
-    const upper = !hasComma ? lower : upperText === '' ? Infinity : Number(upperText);
+    // No comma means an exact count; a comma with no number means open-ended.
+    const upper = !hasComma ? lower : upperText === '' ? null : Number(upperText);
 
-    if (lower > MAX_REPETITION || upper > MAX_REPETITION) {
+    if (lower > MAX_REPETITION || (upper !== null && upper > MAX_REPETITION)) {
       return {
         safe: false,
         code: 'REPETITION_TOO_LARGE',

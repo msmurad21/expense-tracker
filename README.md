@@ -187,9 +187,15 @@ sample like the ones in `tests/fixtures/`.
 ## Development
 
 ```bash
-npm test                      # 179 tests
+npm test                      # 198 tests
 npm run typecheck
+
 npm run sync -- --discover    # see who sends you money mail, writes nothing
+npm run templates             # list email formats and their approval status
+npm run parse                 # turn synced mail into transactions
+npm run parse -- --all        # re-derive everything after improving a template
+npm run analyze               # summary + report.html
+
 npm run seed-demo             # invented data, written to a separate demo.db
 npm run analyze -- --demo     # dashboard from that demo data
 ```

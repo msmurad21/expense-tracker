@@ -75,8 +75,22 @@ describe('vetPattern — rejects other hazards', () => {
     expect(vetPattern('(a)\\1').code).toBe('BACKREFERENCE');
   });
 
-  it('rejects oversized repetition counts', () => {
+  it('rejects oversized finite repetition counts', () => {
     expect(vetPattern('(a{5000})').code).toBe('REPETITION_TOO_LARGE');
+    expect(vetPattern('(a{1,5000})').code).toBe('REPETITION_TOO_LARGE');
+  });
+
+  it('allows an open-ended {n,}, which costs exactly what + costs', () => {
+    // Rejecting these while allowing + was an inconsistency that threw out
+    // ordinary patterns like a TLD matcher. Exponential blowup comes from
+    // nesting, not from a single unbounded quantifier.
+    expect(vetPattern('([A-Za-z]{2,})').safe).toBe(true);
+    expect(vetPattern('(\\w{3,})').safe).toBe(true);
+    expect(vetPattern('([\\w.+-]+@[\\w.-]+\\.[A-Za-z]{2,})').safe).toBe(true);
+  });
+
+  it('still catches an open-ended repetition that is nested', () => {
+    expect(vetPattern('([a-z]{2,})+').code).toBe('NESTED_QUANTIFIER');
   });
 
   it('rejects patterns that are too long', () => {

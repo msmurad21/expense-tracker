@@ -22,7 +22,9 @@
     "lint": "eslint . --ext .ts,.tsx",
     "sync": "tsx scripts/sync.ts",
     "analyze": "tsx scripts/analyze.ts",
-    "seed-demo": "tsx scripts/seed-demo.ts"
+    "seed-demo": "tsx scripts/seed-demo.ts",
+    "parse": "tsx scripts/parse.ts",
+    "templates": "tsx scripts/templates.ts"
   },
   "dependencies": {
     "imapflow": "^1.0.191",
