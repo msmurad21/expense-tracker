@@ -8,6 +8,10 @@ recurring, and tells you what you are actually paying for each month.
 
 Your data never leaves your machine.
 
+![The dashboard, showing monthly commitment, spending over time, category breakdown and every detected subscription](docs/dashboard-light.png)
+
+<sub>Screenshot uses invented demo data — `npm run seed-demo && npm run analyze -- --demo`. Never a real inbox.</sub>
+
 ---
 
 ## Why this exists
@@ -102,7 +106,7 @@ finished yet.
 | ✅ Parse templates + security model | working |
 | ✅ Gmail over IMAP | working |
 | ✅ Subscription cadence detection | working |
-| 🚧 Analytics and charts | in progress |
+| ✅ Analytics + dashboard | working |
 | 🚧 Desktop UI | in progress |
 | 📋 Gmail API (OAuth) | planned |
 
@@ -183,9 +187,11 @@ sample like the ones in `tests/fixtures/`.
 ## Development
 
 ```bash
-npm test              # 151 tests
+npm test                      # 179 tests
 npm run typecheck
-npm run sync -- --discover   # see who sends you money mail, writes nothing
+npm run sync -- --discover    # see who sends you money mail, writes nothing
+npm run seed-demo             # invented data, written to a separate demo.db
+npm run analyze -- --demo     # dashboard from that demo data
 ```
 
 ---
